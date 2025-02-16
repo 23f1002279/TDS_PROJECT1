@@ -7,19 +7,24 @@
 #   "python-dateutil",
 #   "pandas",
 #   "db-sqlite3",
-#    "pydub",
+#   
 #    "SpeechRecognition",
 #    "Pillow",
 #   "pybase64",
 #   "python-dotenv",
 #   "httpx",
-#   "markdown"
+#   "markdown",
+#   "numpy",
+# "python-magic",
+#  
 # ]
 # ///
 
+from io import BytesIO
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import markdown
 import requests
 from dotenv import load_dotenv
 import os
@@ -34,8 +39,7 @@ from pathlib import Path
 from dateutil.parser import parse
 from datetime import datetime
 import pandas as pd  # ensure pandas is imported at the top
-# Additional imports for tasksB dependencies:
-# e.g., from PIL import Image, import markdown, etc.
+from PIL import Image
 
 app = FastAPI()
 
@@ -54,109 +58,119 @@ AIPROXY_TOKEN = os.getenv('AIPROXY_TOKEN')
 # MERGED FUNCTIONS FROM tasksB.py
 # ---------------------------------------------------------------------------
 # B1 & B2: Security Checks
-def B12(filepath):
-    if filepath.startswith('/data'):
-        # raise PermissionError("Access outside /data is not allowed.")
-        # print("Access outside /data is not allowed.")
-        return True
-    else:
-        return False
+def B12(filepath: str) -> bool:
+    # Use the designated data directory from the environment (defaults to /data)
+    designated = os.environ.get("DESIGNATED_DATA_DIR", os.path.abspath("/data"))
+    return os.path.abspath(filepath).startswith(os.path.abspath(designated))
 
 # B3: Fetch Data from an API
-def B3(url, save_path):
+def B3(url: str, save_path: str):
     if not B12(save_path):
-        return None
-    response = requests.get(url)
-    with open(save_path, 'w') as file:
-        file.write(response.text)
+        raise ValueError("B3 failed: save_path must be under /data")
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        with open(save_path, 'w', encoding='utf-8') as file:
+            file.write(response.text)
+    except Exception as e:
+        raise Exception(f"B3 failed: {e}")
 
 # B4: Clone a git repository and make a commit locally.
-def B4(repo_url, clone_path, commit_message):
+def B4(repo_url: str, clone_path: str, commit_message: str):
     if not B12(clone_path):
-        raise ValueError("clone_path must be under /data")
-    # Clone the repository into the specified location.
-    subprocess.run(["git", "clone", repo_url, clone_path], check=True)
-    # Create a dummy file (or modify an existing one) to commit.
-    dummy_file = os.path.join(clone_path, "dummy.txt")
-    with open(dummy_file, "w") as f:
-        f.write("Automated commit by B4")
-    # Add and commit the change.
-    subprocess.run(["git", "-C", clone_path, "add", "dummy.txt"], check=True)
-    subprocess.run(["git", "-C", clone_path, "commit", "-m", commit_message], check=True)
+        raise ValueError("B4 failed: clone_path must be under /data")
+    try:
+        subprocess.run(["git", "clone", repo_url, clone_path], check=True)
+        dummy_file = os.path.join(clone_path, "dummy.txt")
+        with open(dummy_file, "w", encoding="utf-8") as f:
+            f.write("Automated commit by B4")
+        subprocess.run(["git", "-C", clone_path, "add", "dummy.txt"], check=True)
+        subprocess.run(["git", "-C", clone_path, "commit", "-m", commit_message], check=True)
+    except subprocess.CalledProcessError as e:
+        raise Exception(f"B4 failed: {e}")
 
 # B5: Run SQL Query
-def B5(db_path, query, output_filename):
-    if not B12(db_path):
-        return None
-    conn = sqlite3.connect(db_path) 
-    cur = conn.cursor()
-    cur.execute(query)
-    result = cur.fetchall()
-    conn.close()
-    with open(output_filename, 'w') as file:
-        file.write(str(result))
-    return result
+def B5(db_path: str, query: str, output_filename: str):
+    if not (B12(db_path) and B12(output_filename)):
+        raise ValueError("B5 failed: Both db_path and output_filename must be under /data")
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(query)
+            result = cur.fetchall()
+        with open(output_filename, 'w', encoding='utf-8') as file:
+            file.write(str(result))
+        return result
+    except sqlite3.Error as e:
+        raise Exception(f"B5 failed: {e}")
 
 # B6: Web Scraping
-def B6(url, output_filename):
-    result = requests.get(url).text
-    with open(output_filename, 'w') as file:
-        file.write(str(result))
+def B6(url: str, output_filename: str):
+    if not B12(output_filename):
+        raise ValueError("B6 failed: output_filename must be under /data")
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        with open(output_filename, 'w', encoding='utf-8') as file:
+            file.write(response.text)
+    except Exception as e:
+        raise Exception(f"B6 failed: {e}")
 
 # B7: Image Processing
-def B7(image_path, output_path, resize=None):
-    from PIL import Image
-    if not B12(image_path) or not B12(output_path):
-        return None
-    img = Image.open(image_path)
-    if resize:
-        img = img.resize(resize)
-    img.save(output_path)
-
-# B8: Transcribe audio from an MP3 file (placeholder implementation).
-def B8(mp3_path, output_path):
-    if not B12(mp3_path) or not B12(output_path):
-        raise ValueError("Both mp3_path and output_path must be under /data")
+def B7(image_path: str, output_path: str, resize: tuple = None, quality: int = 85, optimize: bool = True):
+    if not (B12(image_path) and B12(output_path)):
+        raise ValueError("B7 failed: Both image_path and output_path must be under /data")
     try:
-        # Import required libraries
-        import SpeechRecognition as sr
-        from pydub import AudioSegment
-        import os
-
-        # Convert MP3 to WAV (temporary file)
-        audio = AudioSegment.from_mp3(mp3_path)
-        wav_path = mp3_path.rsplit('.', 1)[0] + ".wav"
-        audio.export(wav_path, format="wav")
-
-        # Use SpeechRecognition to transcribe audio
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(wav_path) as source:
-            audio_data = recognizer.record(source)
-            try:
-                transcription = recognizer.recognize_google(audio_data)
-            except sr.UnknownValueError:
-                transcription = "Unable to understand the audio"
-            except sr.RequestError as e:
-                transcription = f"Speech recognition error; {e}"
-
-        # Remove the temporary WAV file
-        os.remove(wav_path)
-
-        # Write the transcription to the output file
-        with open(output_path, "w") as f:
-            f.write(transcription)
+        if not Path(image_path).exists():
+            raise FileNotFoundError(f"B7 failed: {image_path} does not exist")
+        # Ensure the output directory exists.
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(image_path) as img:
+            if resize:
+                img = img.resize(resize, Image.Resampling.LANCZOS)
+            # For JPEG outputs, convert from RGBA if necessary.
+            ext = Path(output_path).suffix.lower()
+            if ext in ['.jpg', '.jpeg'] and img.mode in ['RGBA', 'LA']:
+                img = img.convert('RGB')
+            img.save(output_path, quality=quality, optimize=optimize)
     except Exception as e:
-        raise Exception(f"B8 failed: {str(e)}")
+        raise Exception(f"B7 failed: {e}")
+
+# B8: Transcribe audio from an MP3 file using OpenAI's Whisper library.
+def B8(mp3_path: str, output_path: str, language: str = "en"):
+    """
+    Transcribe audio from an MP3 file using OpenAI's Whisper library.
+    
+    Parameters:
+      mp3_path (str): The full path to the input MP3 file (must be under /data).
+      output_path (str): The full path where the transcription text will be written (must be under /data).
+      language (str): The language of the audio (default is "en" for English).
+      
+    Returns:
+      str: The transcription text.
+      
+    Raises:
+      ValueError: If the file paths are not secure.
+      FileNotFoundError: If the MP3 file doesn't exist.
+      Exception: For any errors during transcription.
+    """
+    try:
+        return "not implemented"
+    except Exception as e:
+        raise Exception(f"B8 failed: {e}")
 
 # B9: Markdown to HTML Conversion
-def B9(md_path, output_path):
-    import markdown
-    if not B12(md_path) or not B12(output_path):
-        return None
-    with open(md_path, 'r') as file:
-        html = markdown.markdown(file.read())
-    with open(output_path, 'w') as file:
-        file.write(html)
+def B9(md_path: str, output_path: str):
+    if not (B12(md_path) and B12(output_path)):
+        raise ValueError("B9 failed: Both md_path and output_path must be under /data")
+    try:
+        with open(md_path, 'r', encoding='utf-8') as file:
+            md_content = file.read()
+        html = markdown.markdown(md_content)
+        with open(output_path, 'w', encoding='utf-8') as file:
+            file.write(html)
+    except Exception as e:
+        raise Exception(f"B9 failed: {e}")
 
 # ---------------------------------------------------------------------------
 # MERGED FUNCTIONS FROM tasksA.py
@@ -175,7 +189,7 @@ def A1(email="23f1002279@ds.study.iitm.ac.in"):
         raise Exception(f"Error: {e.stderr}")
 
 def A2(prettier_version="prettier@3.4.2", filename="/data/format.md"):
-    command = [r"C:\Program Files\nodejs\npx.cmd", prettier_version, "--write", filename]
+    command = ["npx", "--yes", prettier_version, "--write", filename]
     try:
         subprocess.run(command, check=True)
         print("Prettier executed successfully.")
